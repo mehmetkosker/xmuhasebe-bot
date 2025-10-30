@@ -1,85 +1,76 @@
 import os
-import re
-import pytesseract
-import shutil
+from telegram.ext import Updater, MessageHandler, Filters, CommandHandler
+from telegram import Update
+from telegram.ext.callbackcontext import CallbackContext
 from PIL import Image
-from datetime import datetime
-from openpyxl import Workbook, load_workbook
-from telegram.ext import Updater, MessageHandler, Filters
+import pytesseract
+import openpyxl
 
-# ========================
-# 📂 AYARLAR
-# ========================
-EXCEL_PATH = "XMuhasebe.xlsx"
-IMAGE_DIR = "Fisler"
-os.makedirs(IMAGE_DIR, exist_ok=True)
 
-# ========================
-# 📘 EXCEL DOSYASINI OLUŞTUR
-# ========================
-if not os.path.exists(EXCEL_PATH):
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Yönetici"
-    ws.append(["ID", "Yükleme Tarihi", "Belge Tarihi", "Firma", "Tutar", "Döviz", "Kullanıcı", "Fotoğraf Yolu"])
-    wb.save(EXCEL_PATH)
+# --- CONFIG ---
+TOKEN = os.getenv("BOT_TOKEN")  # Render Environment Variables'da ayarladığın token
 
-# ========================
-# 🔍 OCR FONKSİYONU
-# ========================
-def ocr_parse(image_path):
-    text = pytesseract.image_to_string(Image.open(image_path), lang='tur')
-    date_match = re.search(r'(\d{2}[./-]\d{2}[./-]\d{4})', text)
-    doc_date = date_match.group(1) if date_match else ""
-    amount_match = re.search(r'(\d+[.,]\d{2})(?!\d)', text)
-    amount = amount_match.group(1) if amount_match else ""
-    firm_match = re.search(r'[A-ZÇĞİÖŞÜ][A-Za-zÇĞİÖŞÜçğıöşü\s.-]{2,}', text)
-    firm = firm_match.group(0).strip() if firm_match else ""
-    return text, doc_date, amount, firm
+if not TOKEN:
+    raise ValueError("❌ BOT_TOKEN tanımlı değil! Render Environment sekmesinde BOT_TOKEN ekle.")
 
-# ========================
-# 📸 FOTOĞRAF YÜKLEME İŞLEMLERİ
-# ========================
-def handle_photo(update, context):
-    user = update.message.from_user.username or update.message.from_user.first_name
-    file = context.bot.getFile(update.message.photo[-1].file_id)
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    image_path = f"{IMAGE_DIR}/fis_{timestamp}.jpg"
-    file.download(image_path)
 
-    text, doc_date, amount, firm = ocr_parse(image_path)
+# --- OCR FUNCTION ---
+def extract_text_from_image(image_path):
+    """Fotoğraftan metni OCR ile çıkarır."""
+    try:
+        text = pytesseract.image_to_string(Image.open(image_path), lang='eng')
+        return text.strip() if text else "Metin tespit edilemedi."
+    except Exception as e:
+        return f"Hata: {e}"
 
-    wb = load_workbook(EXCEL_PATH)
-    ws = wb.active
-    next_id = ws.max_row
-    ws.append([
-        next_id,
-        datetime.now().strftime("%Y-%m-%d %H:%M"),
-        doc_date,
-        firm,
-        amount,
-        "TRY",
-        user,
-        image_path
-    ])
-    wb.save(EXCEL_PATH)
 
-    update.message.reply_text(
-        f"✅ Fiş kaydedildi!\n\n📆 Belge Tarihi: {doc_date}\n🏢 Firma: {firm}\n💰 Tutar: {amount} TRY"
-    )
+# --- COMMAND HANDLERS ---
+def start(update: Update, context: CallbackContext):
+    update.message.reply_text("Merhaba 👋\nBir fotoğraf gönder, içindeki metni OCR ile çıkarayım.")
 
-# ========================
-# 🤖 TELEGRAM BOT BAŞLATMA
-# ========================
+
+# --- PHOTO HANDLER ---
+def handle_photo(update: Update, context: CallbackContext):
+    photo = update.message.photo[-1].get_file()
+    photo_path = "received_photo.jpg"
+    photo.download(photo_path)
+
+    extracted_text = extract_text_from_image(photo_path)
+
+    # Mesaj olarak gönder
+    update.message.reply_text(f"📄 OCR Sonucu:\n\n{extracted_text}")
+
+    # Excel’e kaydet (opsiyonel)
+    save_to_excel(extracted_text)
+
+
+def save_to_excel(text):
+    """OCR sonuçlarını excel dosyasına kaydeder (yoksa oluşturur)."""
+    file_path = "ocr_results.xlsx"
+    if os.path.exists(file_path):
+        wb = openpyxl.load_workbook(file_path)
+        ws = wb.active
+    else:
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(["OCR Sonucu"])
+
+    ws.append([text])
+    wb.save(file_path)
+
+
+# --- MAIN FUNCTION ---
 def main():
-    TOKEN = "YOUR_TELEGRAM_BOT_TOKEN_HERE"  # 🔒 Buraya kendi bot token'ını yaz
     updater = Updater(TOKEN, use_context=True)
     dp = updater.dispatcher
 
+    dp.add_handler(CommandHandler("start", start))
     dp.add_handler(MessageHandler(Filters.photo, handle_photo))
+
     updater.start_polling()
-    print("🤖 XMuhasebe bot aktif (Render). Telegram'dan fotoğraf gönder!")
+    print("🤖 Bot çalışıyor...")
     updater.idle()
+
 
 if __name__ == "__main__":
     main()
